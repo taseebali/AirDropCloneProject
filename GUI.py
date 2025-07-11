@@ -3,11 +3,42 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import time
 import os
+import sys
 from pathlib import Path
 import socket
-from src.discovery import start_discovery, PEERS
-from src.server import file_receiver
-from src.client import file_sender
+
+# Add the current directory and src directory to the Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.join(current_dir, 'src')
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+# Try different import paths
+try:
+    # Try importing from src directory first
+    from src.discovery import start_discovery, PEERS
+    from src.server import file_receiver, set_save_path, get_save_path
+    from src.client import file_sender
+except ImportError:
+    try:
+        # Try importing from current directory
+        from discovery import start_discovery, PEERS
+        from server import file_receiver, set_save_path, get_save_path
+        from client import file_sender
+    except ImportError:
+        # Try importing with relative imports
+        import discovery
+        import server
+        import client
+
+        start_discovery = discovery.start_discovery
+        PEERS = discovery.PEERS
+        file_receiver = server.file_receiver
+        set_save_path = server.set_save_path
+        get_save_path = server.get_save_path
+        file_sender = client.file_sender
 
 
 class PyDropGUI:
@@ -19,8 +50,20 @@ class PyDropGUI:
 
         # Default save location
         self.save_location = str(Path.home() / "Downloads")
+        # Set the global save path immediately
+        if not set_save_path(self.save_location):
+            # If Downloads doesn't exist, try Documents
+            self.save_location = str(Path.home() / "Documents")
+            if not set_save_path(self.save_location):
+                # If Documents doesn't exist, use home directory
+                self.save_location = str(Path.home())
+                set_save_path(self.save_location)
 
-        # Initialize discovery
+        # Pending transfer confirmation
+        self.pending_transfer = None
+        self.confirmation_dialog = None
+
+        # Initialize UI and services
         self.setup_ui()
         self.start_services()
 
@@ -126,18 +169,112 @@ class PyDropGUI:
         self.refresh_peers()
         self.root.after(3000, self.auto_refresh_peers)
 
+    def show_file_transfer_confirmation(self, filename, sender_ip, file_size):
+        """Show confirmation dialog for incoming file transfer."""
+
+        def on_accept():
+            self.log_status(f"File transfer accepted: {filename} from {sender_ip}")
+            if self.pending_transfer:
+                self.pending_transfer['accepted'] = True
+            self.confirmation_dialog.destroy()
+            self.confirmation_dialog = None
+
+        def on_reject():
+            self.log_status(f"File transfer rejected: {filename} from {sender_ip}")
+            if self.pending_transfer:
+                self.pending_transfer['accepted'] = False
+            self.confirmation_dialog.destroy()
+            self.confirmation_dialog = None
+
+        # Create confirmation dialog
+        self.confirmation_dialog = tk.Toplevel(self.root)
+        self.confirmation_dialog.title("Incoming File Transfer")
+        self.confirmation_dialog.geometry("400x200")
+        self.confirmation_dialog.resizable(False, False)
+        self.confirmation_dialog.grab_set()  # Modal dialog
+
+        # Center the dialog on the main window
+        self.confirmation_dialog.transient(self.root)
+        self.confirmation_dialog.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+
+        # Main frame
+        main_frame = ttk.Frame(self.confirmation_dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Icon and message
+        ttk.Label(main_frame, text="📁", font=("Arial", 24)).pack(pady=(0, 10))
+
+        ttk.Label(main_frame, text="Incoming File Transfer",
+                  font=("Arial", 12, "bold")).pack(pady=(0, 10))
+
+        # File details
+        details_frame = ttk.Frame(main_frame)
+        details_frame.pack(pady=(0, 20))
+
+        ttk.Label(details_frame, text=f"File: {filename}").pack(anchor=tk.W)
+        ttk.Label(details_frame, text=f"From: {sender_ip}").pack(anchor=tk.W)
+        if file_size:
+            size_str = self.format_file_size(file_size)
+            ttk.Label(details_frame, text=f"Size: {size_str}").pack(anchor=tk.W)
+        ttk.Label(details_frame, text=f"Save to: {get_save_path()}").pack(anchor=tk.W)
+
+        ttk.Label(main_frame, text="Do you want to accept this file?").pack(pady=(0, 20))
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack()
+
+        ttk.Button(button_frame, text="Yes", command=on_accept, width=10).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="No", command=on_reject, width=10).pack(side=tk.LEFT)
+
+        # Handle dialog close
+        self.confirmation_dialog.protocol("WM_DELETE_WINDOW", on_reject)
+
+        # Set pending transfer info
+        self.pending_transfer = {
+            'filename': filename,
+            'sender_ip': sender_ip,
+            'file_size': file_size,
+            'accepted': None
+        }
+
+    def format_file_size(self, size_bytes):
+        """Format file size in human readable format."""
+        if size_bytes == 0:
+            return "0 B"
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        i = 0
+        while size_bytes >= 1024 and i < len(size_names) - 1:
+            size_bytes /= 1024
+            i += 1
+        return f"{size_bytes:.1f} {size_names[i]}"
+
     def browse_save_location(self):
         """Open a dialog to select save location."""
         folder = filedialog.askdirectory(initialdir=self.save_location, title="Select Save Location")
         if folder:
             self.save_location = folder
             self.save_location_var.set(folder)
-            self.log_status(f"Save location changed to: {folder}")
+            # Update the global save path
+            if set_save_path(folder):
+                self.log_status(f"Save location changed to: {folder}")
+                print(f"[GUI] Save location changed to: {folder}")  # Debug print
+            else:
+                self.log_status(f"Failed to set save location: {folder}")
+                print(f"[GUI] Failed to set save location: {folder}")  # Debug print
 
     def open_save_folder(self):
         """Open the current save location in file explorer."""
-        if os.path.exists(self.save_location):
-            os.startfile(self.save_location) if os.name == 'nt' else os.system(f'open "{self.save_location}"')
+        current_path = get_save_path()  # Get the actual current path
+        if os.path.exists(current_path):
+            if os.name == 'nt':  # Windows
+                os.startfile(current_path)
+            elif os.name == 'posix':  # macOS and Linux
+                os.system(
+                    f'open "{current_path}"' if os.uname().sysname == 'Darwin' else f'xdg-open "{current_path}"')
         else:
             messagebox.showerror("Error", "Save location does not exist!")
 
@@ -153,7 +290,13 @@ class PyDropGUI:
         if folder and os.path.exists(folder):
             self.save_location = folder
             self.save_location_var.set(folder)
-            self.log_status(f"Save location changed to: {folder}")
+            # Update the global save path
+            if set_save_path(folder):
+                self.log_status(f"Save location changed to: {folder}")
+                print(f"[GUI] Save location changed to: {folder}")  # Debug print
+            else:
+                self.log_status(f"Failed to set save location: {folder}")
+                print(f"[GUI] Failed to set save location: {folder}")  # Debug print
         else:
             messagebox.showerror("Error", f"{location} folder not found!")
 
@@ -168,46 +311,85 @@ class PyDropGUI:
 
         self.log_status("PyDrop started successfully!")
         self.log_status("Discovering peers on your network...")
+        self.log_status(f"Files will be saved to: {get_save_path()}")
 
     def file_receiver_wrapper(self):
         """Wrapper for file receiver to handle GUI updates."""
         try:
-            from src.server import file_receiver
-            file_receiver(self.save_location, self.on_file_received, self.on_transfer_progress, self.root)
+            # Use the existing file_receiver function with GUI parameters
+            file_receiver(
+                on_file_received=self.on_file_received,
+                on_transfer_progress=self.on_transfer_progress,
+                on_transfer_request=self.on_transfer_request,
+                gui_root=self.root
+            )
         except Exception as e:
             self.log_status(f"Error in file receiver: {e}")
+            print(f"[GUI] Error in file receiver: {e}")
+
+    def on_transfer_request(self, filename, sender_ip, file_size):
+        """Callback when a file transfer is requested."""
+        print(f"[GUI] Transfer request: {filename} from {sender_ip}, current save path: {get_save_path()}")  # Debug print
+
+        def show_dialog():
+            self.show_file_transfer_confirmation(filename, sender_ip, file_size)
+
+        # Schedule GUI update on main thread
+        self.root.after(0, show_dialog)
+
+        # Wait for user response
+        while self.pending_transfer and self.pending_transfer['accepted'] is None:
+            time.sleep(0.1)
+
+        if self.pending_transfer:
+            result = self.pending_transfer['accepted']
+            self.pending_transfer = None
+            return result
+        return False
 
     def on_file_received(self, filename, sender_ip):
         """Callback when a file is received."""
-        if filename.startswith("FAILED:"):
-            self.log_status(f"File transfer failed: {filename[7:]} from {sender_ip}")
-        else:
-            self.log_status(f"File received: {filename} from {sender_ip}")
-            self.log_status(f"Saved to: {os.path.join(self.save_location, filename)}")
-        self.progress_var.set(0)
+
+        def update_gui():
+            if filename.startswith("FAILED:"):
+                self.log_status(f"File transfer failed: {filename[7:]} from {sender_ip}")
+            else:
+                self.log_status(f"File received: {filename} from {sender_ip}")
+                self.log_status(f"Saved to: {os.path.join(get_save_path(), filename)}")
+            self.progress_var.set(0)
+
+        # Schedule GUI update on main thread
+        self.root.after(0, update_gui)
 
     def on_transfer_progress(self, progress):
         """Callback for transfer progress updates."""
-        self.progress_var.set(progress)
-        self.root.update_idletasks()
+
+        def update_progress():
+            self.progress_var.set(progress)
+
+        # Schedule GUI update on main thread
+        self.root.after(0, update_progress)
 
     def refresh_peers(self):
         """Refresh the peers list."""
         self.peers_listbox.delete(0, tk.END)
 
         current_time = time.time()
-        active_peers = {}
+        active_peers = []
 
-        for ip, data in PEERS.items():
+        # Create a copy of PEERS to avoid modification during iteration
+        peers_copy = dict(PEERS)
+
+        for ip, data in peers_copy.items():
             if current_time - data['last_seen'] <= 10:  # Peer is active
-                active_peers[ip] = data
+                active_peers.append((ip, data))
                 self.peers_listbox.insert(tk.END, f"{data['name']} ({ip})")
+            else:
+                # Remove inactive peer
+                if ip in PEERS:
+                    del PEERS[ip]
 
-        # Update PEERS to remove inactive peers
-        PEERS.clear()
-        PEERS.update(active_peers)
-
-        if not PEERS:
+        if not active_peers:
             self.peers_listbox.insert(tk.END, "No peers found...")
 
     def auto_refresh_peers(self):
@@ -223,13 +405,23 @@ class PyDropGUI:
             messagebox.showwarning("No Peer Selected", "Please select a peer to send the file to.")
             return
 
-        if self.peers_listbox.get(selection[0]) == "No peers found...":
+        selected_text = self.peers_listbox.get(selection[0])
+        if selected_text == "No peers found...":
             messagebox.showwarning("No Peers", "No peers available to send files to.")
             return
 
         # Get selected peer IP
-        peer_info = self.peers_listbox.get(selection[0])
-        peer_ip = peer_info.split('(')[1].split(')')[0]
+        try:
+            peer_ip = selected_text.split('(')[1].split(')')[0]
+        except IndexError:
+            messagebox.showerror("Error", "Could not parse peer IP address.")
+            return
+
+        # Check if peer is still active
+        if peer_ip not in PEERS:
+            messagebox.showwarning("Peer Unavailable", "Selected peer is no longer available.")
+            self.refresh_peers()
+            return
 
         # Select file to send
         file_path = filedialog.askopenfilename(
@@ -238,25 +430,34 @@ class PyDropGUI:
         )
 
         if file_path:
+            if not os.path.exists(file_path):
+                messagebox.showerror("Error", "Selected file does not exist.")
+                return
+
+            if not os.path.isfile(file_path):
+                messagebox.showerror("Error", "Selected path is not a file.")
+                return
+
             # Send file in a separate thread
-            self.log_status(f"Sending file: {os.path.basename(file_path)} to {peer_ip}")
+            self.log_status(f"Sending file: {os.path.basename(file_path)} to {PEERS[peer_ip]['name']} ({peer_ip})")
             send_thread = threading.Thread(
                 target=self.send_file_wrapper,
                 args=(peer_ip, file_path),
                 daemon=True
             )
             send_thread.start()
-
     def send_file_wrapper(self, peer_ip, file_path):
         """Wrapper for file sender to handle GUI updates."""
         try:
-            self.progress_var.set(0)
+            self.root.after(0, lambda: self.progress_var.set(0))
             file_sender(peer_ip, file_path)
-            self.log_status(f"File sent successfully: {os.path.basename(file_path)}")
-            self.progress_var.set(100)
+            self.root.after(0, lambda: self.log_status(f"File sent successfully: {os.path.basename(file_path)}"))
+            self.root.after(0, lambda: self.progress_var.set(100))
+            # Reset progress bar after 3 seconds
+            self.root.after(3000, lambda: self.progress_var.set(0))
         except Exception as e:
-            self.log_status(f"Error sending file: {e}")
-            self.progress_var.set(0)
+            self.root.after(0, lambda: self.log_status(f"Error sending file: {e}"))
+            self.root.after(0, lambda: self.progress_var.set(0))
 
     def log_status(self, message):
         """Add a message to the status log."""
