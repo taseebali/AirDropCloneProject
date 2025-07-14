@@ -8,6 +8,7 @@ from utils.crypto import decrypt_file, get_key, NONCE_SIZE, TAG_SIZE
 
 TCP_PORT = 50001
 BUFFER_SIZE = 4096
+CHAT_PORT = 50010  # New for chat server
 
 # Global variable to store the current save path
 CURRENT_SAVE_PATH = os.path.expanduser("~/Downloads")  # Default to Downloads folder
@@ -33,7 +34,7 @@ def get_save_path():
 def choose_save_location():
     """Open a dialog to choose save location."""
     root = tk.Tk()
-    root.withdraw()  # Hide the main window
+    root.withdraw()
 
     folder_path = filedialog.askdirectory(
         title="Choose folder to save received files",
@@ -51,7 +52,7 @@ def choose_save_location():
 def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_transfer_progress=None,
                   on_transfer_request=None, gui_root=None):
     """Listens for incoming file transfers and handles them."""
-    while True:  # Keep listening for connections
+    while True:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -68,21 +69,17 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
                     file_name, file_size_str = file_info.split("|")
                     file_size = int(file_size_str)
 
-                    # Handle file acceptance based on context
+                    # Handle file acceptance
                     accept_file = False
                     chosen_path = None
 
                     if on_transfer_request:
-                        # GUI mode - use the GUI's callback for acceptance
                         accept_file = on_transfer_request(file_name, addr[0], file_size)
-                        # Use the current save path from GUI
                         current_save_path = get_save_path()
                     elif gui_root:
-                        # GUI mode but no callback - use built-in dialog
                         accept_file, chosen_path = show_file_acceptance_dialog(gui_root, file_name, file_size, addr[0])
                         current_save_path = chosen_path if chosen_path else get_save_path()
                     else:
-                        # Command line mode
                         response = input(f"Incoming file: {file_name} ({file_size} bytes). Accept? (y/n): ")
                         accept_file = response.lower() == 'y'
                         current_save_path = get_save_path()
@@ -94,19 +91,14 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
 
                     conn.send(b"ACCEPT")
 
-                    # Ensure save directory exists
                     os.makedirs(current_save_path, exist_ok=True)
-
-                    # Handle file name conflicts
                     output_path = os.path.join(current_save_path, file_name)
                     output_path = get_unique_filename(output_path)
 
                     print(f"[*] Saving file to: {output_path}")
 
-                    # Receive file data
                     key = get_key()
 
-                    # Receive nonce and tag
                     nonce = conn.recv(NONCE_SIZE)
                     tag = conn.recv(TAG_SIZE)
 
@@ -115,7 +107,6 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
 
                     print(f"[*] Receiving file: {file_name}")
 
-                    # Use progress bar only in command line mode
                     if not gui_root:
                         progress_bar = tqdm(total=file_size, unit='B', unit_scale=True, desc=file_name)
 
@@ -126,7 +117,6 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
                         encrypted_data += chunk
                         bytes_received += len(chunk)
 
-                        # Update progress
                         if not gui_root:
                             progress_bar.update(len(chunk))
                         elif on_transfer_progress:
@@ -140,8 +130,6 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
                         decrypt_file(encrypted_data, key, nonce, tag, output_path)
                         print(f"\n[+] File '{file_name}' received and decrypted successfully.")
                         print(f"[+] Saved to: {output_path}")
-
-                        # Notify GUI of successful reception
                         if on_file_received:
                             on_file_received(file_name, addr[0])
 
@@ -153,6 +141,49 @@ def file_receiver(save_path_func=None, save_path=".", on_file_received=None, on_
         except Exception as e:
             print(f"[-] Server error: {e}")
             continue
+
+
+def chat_server(chat_port=CHAT_PORT):
+    """Simple threaded chat server."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.bind(("", chat_port))
+            server_sock.listen()
+            print(f"[*] Chat server listening on port {chat_port}...")
+
+            conn, addr = server_sock.accept()
+            with conn:
+                print(f"[+] Chat connection established from {addr}")
+                print("Type '/exit' to quit chat.")
+
+                def receive_messages():
+                    while True:
+                        try:
+                            data = conn.recv(1024)
+                            if not data:
+                                print("\n[*] Peer disconnected.")
+                                break
+                            print(f"\nPeer: {data.decode('utf-8')}\nYou: ", end="", flush=True)
+                        except:
+                            break
+
+                recv_thread = threading.Thread(target=receive_messages, daemon=True)
+                recv_thread.start()
+
+                while True:
+                    msg = input("You: ")
+                    if msg.strip() == "/exit":
+                        print("[*] Exiting chat server.")
+                        break
+                    try:
+                        conn.sendall(msg.encode('utf-8'))
+                    except:
+                        print("[*] Connection closed unexpectedly.")
+                        break
+
+    except Exception as e:
+        print(f"[-] Chat server error: {e}")
 
 
 def get_unique_filename(filepath):
@@ -175,7 +206,7 @@ def get_unique_filename(filepath):
 
 def show_file_acceptance_dialog(root, file_name, file_size, sender_ip):
     """Show a dialog to accept or decline file transfer with save location option."""
-    result = [False, None]  # [accept, save_path]
+    result = [False, None]
 
     def on_accept():
         result[0] = True
@@ -195,7 +226,6 @@ def show_file_acceptance_dialog(root, file_name, file_size, sender_ip):
             location_label.config(text=f"Save to: {folder_path}")
             accept_button.config(state=tk.NORMAL)
 
-    # Create dialog window
     dialog = tk.Toplevel(root)
     dialog.title("Incoming File Transfer")
     dialog.geometry("500x300")
@@ -203,28 +233,23 @@ def show_file_acceptance_dialog(root, file_name, file_size, sender_ip):
     dialog.transient(root)
     dialog.grab_set()
 
-    # Center the dialog
     dialog.update_idletasks()
     x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
     y = (dialog.winfo_screenheight() // 2) - (300 // 2)
     dialog.geometry(f"500x300+{x}+{y}")
 
-    # Content frame
     frame = tk.Frame(dialog, padx=20, pady=20)
     frame.pack(fill=tk.BOTH, expand=True)
 
-    # File info
     tk.Label(frame, text="Incoming File Transfer", font=("Arial", 14, "bold")).pack(pady=(0, 15))
 
     info_frame = tk.Frame(frame)
     info_frame.pack(fill=tk.X, pady=(0, 15))
 
     tk.Label(info_frame, text=f"File: {file_name}", font=("Arial", 10)).pack(anchor=tk.W)
-    tk.Label(info_frame, text=f"Size: {file_size:,} bytes ({file_size / 1024 / 1024:.1f} MB)", font=("Arial", 10)).pack(
-        anchor=tk.W)
+    tk.Label(info_frame, text=f"Size: {file_size:,} bytes ({file_size / 1024 / 1024:.1f} MB)", font=("Arial", 10)).pack(anchor=tk.W)
     tk.Label(info_frame, text=f"From: {sender_ip}", font=("Arial", 10)).pack(anchor=tk.W)
 
-    # Save location section
     location_frame = tk.Frame(frame)
     location_frame.pack(fill=tk.X, pady=(0, 15))
 
@@ -237,7 +262,6 @@ def show_file_acceptance_dialog(root, file_name, file_size, sender_ip):
 
     tk.Label(frame, text="Do you want to accept this file?", font=("Arial", 11, "bold")).pack(pady=(20, 15))
 
-    # Buttons
     button_frame = tk.Frame(frame)
     button_frame.pack(pady=(10, 0))
 
@@ -248,7 +272,6 @@ def show_file_acceptance_dialog(root, file_name, file_size, sender_ip):
     tk.Button(button_frame, text="Decline", command=on_decline,
               bg="#f44336", fg="white", width=12, font=("Arial", 10)).pack(side=tk.LEFT)
 
-    # Wait for user response
     dialog.wait_window()
 
     return result[0], result[1]
