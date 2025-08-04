@@ -14,12 +14,10 @@ A simple LAN-based file sharing application inspired by Apple's AirDrop.
 ```
 PyDrop/
 ├── src/
-│   ├── __init__.py
 │   ├── client.py
 │   ├── discovery.py
 │   └── server.py
 ├── utils/
-│   ├── __init__.py
 │   ├── crypto.py
 │   └── file_utils.py
 ├── main.py

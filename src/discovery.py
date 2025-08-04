@@ -50,7 +50,24 @@ def get_my_ip():
         s.connect(('10.255.255.255', 1))
         IP = s.getsockname()[0]
     except Exception:
-        IP = '127.0.0.1'
+        # Fallback: try localhost, then all interfaces
+        try:
+            IP = socket.gethostbyname(socket.gethostname())
+            if IP.startswith('127.'):
+                # Try to get all interfaces (cross-platform)
+                try:
+                    import netifaces
+                    for iface in netifaces.interfaces():
+                        addrs = netifaces.ifaddresses(iface)
+                        if netifaces.AF_INET in addrs:
+                            for addr in addrs[netifaces.AF_INET]:
+                                if not addr['addr'].startswith('127.'):
+                                    IP = addr['addr']
+                                    break
+                except ImportError:
+                    pass  # netifaces not installed, skip
+        except Exception:
+            IP = '127.0.0.1'
     finally:
         s.close()
     return IP

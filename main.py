@@ -1,6 +1,7 @@
 import threading
 import time
 import os
+import sys
 from src.discovery import start_discovery, PEERS
 from src.server import file_receiver, choose_save_location, get_save_path, set_save_path, chat_server
 from src.client import file_sender, chat_client
@@ -19,7 +20,13 @@ def main():
     print(f"Files will be saved to: {get_save_path()}")
     start_discovery()
 
-    receiver_thread = threading.Thread(target=file_receiver, args=(tcp_port,), daemon=True)
+    # Start file receiver thread with dynamic save path
+    receiver_thread = threading.Thread(
+        target=file_receiver,
+        args=(tcp_port,),
+        kwargs={'save_path_func': get_save_path},
+        daemon=True
+    )
     receiver_thread.start()
 
     try:
@@ -31,8 +38,10 @@ def main():
             print("4. Show current save location")
             print("5. Chat with peer")
             print("6. Exit")
+            print()  # Newline before input for better readability
+            sys.stdout.flush()
 
-            choice = input("Enter your choice: ")
+            choice = input("Enter your choice: ").strip()
 
             if choice == '1':
                 print("\n--- AVAILABLE PEERS ---")
@@ -63,12 +72,12 @@ def main():
                     print("No active peers found.")
                     continue
 
-                peer_ip = input("Enter the IP address of the peer you want to send to: ")
+                peer_ip = input("Enter the IP address of the peer you want to send to: ").strip()
                 if peer_ip not in valid_peers:
                     print("Invalid IP address or peer not active.")
                     continue
 
-                file_path = input("Enter the full path of the file you want to send: ")
+                file_path = input("Enter the full path of the file you want to send: ").strip()
                 if not os.path.exists(file_path):
                     print("File not found.")
                     continue
@@ -87,10 +96,10 @@ def main():
                 print("1. Enter path manually")
                 print("2. Use file dialog (requires GUI)")
 
-                location_choice = input("Choose option (1 or 2): ")
+                location_choice = input("Choose option (1 or 2): ").strip()
 
                 if location_choice == '1':
-                    new_path = input("Enter the full path where you want to save files: ")
+                    new_path = input("Enter the full path where you want to save files: ").strip()
                     if new_path:
                         new_path = os.path.expanduser(new_path)
                         if set_save_path(new_path):
@@ -119,8 +128,7 @@ def main():
 
             elif choice == '5':
                 if not PEERS:
-                    print("No peers to chat with. Discover some first.")
-                    continue
+                    print("No peers to chat with. You can still try to connect manually.")
 
                 print("\n--- AVAILABLE PEERS ---")
                 valid_peers = {}
@@ -130,21 +138,27 @@ def main():
                         print(f"- {data['name']} ({ip})")
 
                 if not valid_peers:
-                    print("No active peers found.")
+                    print("No active peers found via discovery.")
+
+                peer_ip = input("Enter the IP address of the peer you want to chat with (or 127.0.0.1 for local): ").strip()
+                if not peer_ip:
+                    print("No IP address entered.")
                     continue
 
-                peer_ip = input("Enter the IP address of the peer you want to chat with: ")
-                if peer_ip not in valid_peers:
-                    print("Invalid IP address or peer not active.")
-                    continue
-
+                chat_port = int(input("Enter chat port: ").strip())
                 choice_chat = input("Host or Join chat? (h/j): ").strip().lower()
                 if choice_chat == 'h':
-                    print("Starting chat server... (type '/exit' to quit chat)")
-                    chat_server()
+                    print(f"Starting chat server on port {chat_port}... (type '/exit' to quit chat)")
+                    try:
+                        chat_server(chat_port)
+                    except Exception as e:
+                        print(f"Chat server error: {e}")
                 elif choice_chat == 'j':
-                    print(f"Connecting to chat at {peer_ip}... (type '/exit' to quit chat)")
-                    chat_client(peer_ip)
+                    print(f"Connecting to chat at {peer_ip}:{chat_port}... (type '/exit' to quit chat)")
+                    try:
+                        start_chat_client(peer_ip, chat_port)
+                    except Exception as e:
+                        print(f"Failed to connect to chat: {e}")
                 else:
                     print("Invalid choice.")
 
@@ -157,6 +171,54 @@ def main():
 
     except KeyboardInterrupt:
         print("\nExiting PyDrop. Goodbye!")
+
+def start_chat_client(peer_ip, chat_port):
+    """Start a chat client session with a peer."""
+    try:
+        sock = chat_client(peer_ip, chat_port)
+        print(f"Connected to {peer_ip}:{chat_port}. Start chatting! (type '/exit' to quit)")
+        
+        def receive_messages():
+            try:
+                while True:
+                    data = sock.recv(1024)
+                    if not data:
+                        break
+                    message = data.decode()
+                    if message.strip() == '/exit':
+                        print("\n[Peer disconnected]")
+                        break
+                    print(f"\n[Peer]: {message}")
+                    print("You: ", end="", flush=True)
+            except Exception as e:
+                print(f"\n[Connection lost: {e}]")
+            
+        # Start receiving thread
+        receive_thread = threading.Thread(target=receive_messages, daemon=True)
+        receive_thread.start()
+        
+        # Main chat loop
+        while True:
+            try:
+                message = input("You: ")
+                if message.strip() == '/exit':
+                    sock.sendall(message.encode())
+                    break
+                sock.sendall(message.encode())
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"Error sending message: {e}")
+                break
+                
+    except Exception as e:
+        print(f"Chat client error: {e}")
+    finally:
+        try:
+            sock.close()
+        except:
+            pass
+
 
 if __name__ == "__main__":
     main()

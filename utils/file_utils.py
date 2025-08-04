@@ -6,6 +6,9 @@ def get_file_size(file_path):
     """Returns the size of a file in bytes."""
     return os.path.getsize(file_path)
 
+def save_file(path, data):
+    with open(path, 'wb') as f:
+        f.write(data)
 
 def read_file_chunks(file_path, chunk_size=4096):
     """Reads a file in chunks."""
